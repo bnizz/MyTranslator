@@ -31,6 +31,7 @@ Also, for which chats it applies to, it requires editing the lua file right now 
 - [ ] Add more common phrases / terminologies
   - In order to do this you can enable copy paste for Chinese charcters using these instructions https://forum.turtle-wow.org/viewtopic.php?p=137793#p137793
   - Then just sign up to a free https://claude.ai account and paste in messages from World chat or other source with Classic WoW terms in Chinese
+  - Prime it with something like "Hi Claude, I'm trying to translate some World of Warcraft Classic terminologies stated in the Chinese language to English - with that context I will give you some individual examples in order to help translate"
   - Then add atomic pieces of the breakdown for translations to translation tables in the lua file
 
 - [ ] Add ability to change which chat contexts the addon targets from the cli interface in game

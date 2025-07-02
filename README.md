@@ -27,6 +27,8 @@ For additions to the translations, you basically have to edit the translate tabl
 
 Also, for which chats it applies to, it requires editing the lua file right now - might change this soon.
 
+---
+
 ## 📝 Todo
 - [ ] Add more common phrases / terminologies
   - In order to do this you can enable copy paste for Chinese charcters using these instructions https://forum.turtle-wow.org/viewtopic.php?p=137793#p137793

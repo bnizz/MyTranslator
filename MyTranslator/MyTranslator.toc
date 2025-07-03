@@ -1,7 +1,8 @@
 ## Interface: 100105
-## Title: Chat Translator
+## Title: MyTranslator
 ## Notes: Detects and translates between Chinese and English in various chats including incoming and outgoing
 ## Author: bnizz
 ## Version: 1.0
 
+chineseToEnglish.lua
 MyTranslator.lua

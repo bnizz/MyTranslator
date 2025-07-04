@@ -118,32 +118,45 @@ local function translateMessage(message, direction)
     local hasTranslation = false
     
     if direction == "en2cn" then
-        -- For English to Chinese: simple case-insensitive replacement
+        -- For English to Chinese: replace only full words (word boundaries)
+        -- Move escape_lua_pattern outside the loop to avoid redefining it every iteration
+        local function escape_lua_pattern(s)
+            return (string.gsub(s, "([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1"))
+        end
         for english, chinese in pairs(englishToChinese) do
             if english and chinese then
-                local lowerResult = string.lower(result)
-                local lowerEnglish = string.lower(english)
-                
-                -- Check if the word exists (case insensitive)
-                if string.find(lowerResult, lowerEnglish, 1, true) then
-                    -- Try different case variations
-                    local oldResult = result
-                    result = string.gsub(result, english, chinese)
-                    if result == oldResult then
-                        result = string.gsub(result, string.upper(english), chinese)
-                    end
-                    if result == oldResult then
-                        result = string.gsub(result, string.lower(english), chinese)
-                    end
-                    if result == oldResult then
-                        -- Try first letter capitalized
-                        local firstCap = string.upper(string.sub(english, 1, 1)) .. string.lower(string.sub(english, 2))
-                        result = string.gsub(result, firstCap, chinese)
-                    end
-                    
-                    if result ~= oldResult then
-                        hasTranslation = true
-                    end
+                local safeEnglish = escape_lua_pattern(english)
+                local pattern = "(%f[%w])" .. safeEnglish .. "(%f[%W])"
+                local oldResult = result
+                local n = 0
+                result, n = string.gsub(result, pattern, function(a, b) return a .. chinese .. b end)
+                if n > 0 then
+                    hasTranslation = true
+                end
+                -- Try case-insensitive: lower, upper, first-cap
+                if n == 0 then
+                    local lowerEnglish = string.lower(english)
+                    local safeLowerEnglish = escape_lua_pattern(lowerEnglish)
+                    local lowerPattern = "(%f[%w])" .. safeLowerEnglish .. "(%f[%W])"
+                    n = 0
+                    result, n = string.gsub(result, lowerPattern, function(a, b) return a .. chinese .. b end)
+                    if n > 0 then hasTranslation = true end
+                end
+                if n == 0 then
+                    local upperEnglish = string.upper(english)
+                    local safeUpperEnglish = escape_lua_pattern(upperEnglish)
+                    local upperPattern = "(%f[%w])" .. safeUpperEnglish .. "(%f[%W])"
+                    n = 0
+                    result, n = string.gsub(result, upperPattern, function(a, b) return a .. chinese .. b end)
+                    if n > 0 then hasTranslation = true end
+                end
+                if n == 0 then
+                    local firstCap = string.upper(string.sub(english, 1, 1)) .. string.lower(string.sub(english, 2))
+                    local safeFirstCap = escape_lua_pattern(firstCap)
+                    local capPattern = "(%f[%w])" .. safeFirstCap .. "(%f[%W])"
+                    n = 0
+                    result, n = string.gsub(result, capPattern, function(a, b) return a .. chinese .. b end)
+                    if n > 0 then hasTranslation = true end
                 end
             end
         end
@@ -224,22 +237,42 @@ local function translateOutgoingMessage(chatFrame, msg, chatType, language, chan
 end
 
 -- Event handler for all chat messages
-local function onChatMessage(self, event, message, sender, language, channelString, target, flags, unknown, channelNumber, channelName, unknown2, counter)
+local function onChatMessage(message, sender, language, channelString, target, flags, zoneID, channelIndex, channelBaseName, unused, lineID, guid)
     -- Make sure we have valid arguments
-    if not message or not event then return end
-    
-    -- Extract channel type from event name
-    local channel = string.lower(string.gsub(event, "CHAT_MSG_", ""))
-    
-    -- Handle special channel mappings
-    if channel == "channel" then
-        channel = "general"  -- Map CHAT_MSG_CHANNEL to general setting
-    elseif channel == "whisper_inform" then
-        channel = "whisper"  -- Map outgoing whispers to whisper setting
-    elseif channel == "officer" then
-        channel = "guild"    -- Map officer chat to guild setting
+    if not message then return end
+    -- Extract channel type from channelString or channelBaseName
+    local channel = ""
+    if channelString then
+        channel = string.lower(channelString)
+    elseif channelBaseName then
+        channel = string.lower(channelBaseName)
     end
-    
+    -- Fallback: try to detect from channelBaseName
+    if channel == "" and channelBaseName then
+        channel = string.lower(channelBaseName)
+    end
+    if debugMode then
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffd700Debug:|r Raw channelString: " .. tostring(channelString) .. ", channelBaseName: " .. tostring(channelBaseName))
+    end
+    -- Handle special channel mappings
+    if channel:find("world") or channel:find("世") or channel:find("world channel") then
+        channel = "world"
+    elseif channel:find("trade") then
+        channel = "trade"
+    elseif channel:find("general") then
+        channel = "general"
+    elseif channel:find("raid") then
+        channel = "raid"
+    elseif channel:find("guild") then
+        channel = "guild"
+    elseif channel:find("party") then
+        channel = "party"
+    elseif channel:find("whisper") then
+        channel = "whisper"
+    end
+    if debugMode then
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffd700Debug:|r Channel detected: " .. tostring(channel) .. ", message: " .. tostring(message))
+    end
     -- Check if this channel is enabled for translation
     if MyTranslatorDB.channels[channel] then
         processTranslation(message, sender or "Unknown", channel)
@@ -313,9 +346,8 @@ local function handleSlashCommand(msg)
 end
 
 -- Create frame and register events
-local frame = CreateFrame("Frame", "MyTranslatorFrame")
+local frame = CreateFrame("Frame", "MyTranslatorFrameUnique")
 
--- Register all chat events
 local chatEvents = {
     "CHAT_MSG_SAY",
     "CHAT_MSG_YELL", 
@@ -336,6 +368,41 @@ local chatEvents = {
 for _, event in ipairs(chatEvents) do
     frame:RegisterEvent(event)
 end
+
+-- Global debug event handler to catch all events for troubleshooting
+local function globalDebugEventHandler(self, event, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10)
+    if debugMode then
+        local args = {arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10}
+        local argStrings = {}
+        for i, v in ipairs(args) do
+            table.insert(argStrings, tostring(v))
+        end
+        DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[GlobalDebug] Event: " .. tostring(event) .. ", Args: " .. table.concat(argStrings, ", "))
+    end
+end
+
+-- Set up event handler (explicit arguments only)
+frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12)
+    globalDebugEventHandler(self, event, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10)
+    if event == "ADDON_LOADED" then
+        onAddonLoaded(self, event, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10)
+    elseif event == "PLAYER_LOGIN" then
+        -- Backup initialization when player logs in
+        if not TranslationsTable then
+            if debugMode then
+                DEFAULT_CHAT_FRAME:AddMessage("|cffffd700Debug:|r PLAYER_LOGIN: Attempting backup initialization...")
+            end
+            if initializeTranslationData() then
+                if not debugMode then
+                    DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00MyTranslator:|r Ready! Type /mtr for commands.")
+                end
+            end
+        end
+        frame:UnregisterEvent("PLAYER_LOGIN")
+    elseif string.find(event, "CHAT_MSG") then
+        onChatMessage(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12)
+    end
+end)
 
 -- Hook outgoing chat messages
 local originalSendChatMessage = SendChatMessage
@@ -410,7 +477,8 @@ frame:RegisterEvent("ADDON_LOADED")
 frame:RegisterEvent("PLAYER_LOGIN")
 
 -- Set up event handler
-frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10)
+frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12)
+    globalDebugEventHandler(self, event, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10)
     if event == "ADDON_LOADED" then
         onAddonLoaded(self, event, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10)
     elseif event == "PLAYER_LOGIN" then

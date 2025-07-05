@@ -167,12 +167,33 @@ local function translateMessage(message, direction)
             table.insert(sortedTerms, {chinese = chinese, english = english, len = string.len(chinese)})
         end
         table.sort(sortedTerms, function(a, b) return a.len > b.len end)
-        
-        -- Apply translations in order of length (longest first)
+        -- Track replaced regions to avoid overlap (optional, but improves accuracy)
+        local replaced = {}
+        local function is_replaced(startIdx, endIdx)
+            for i = startIdx, endIdx do
+                if replaced[i] then return true end
+            end
+            return false
+        end
         for _, term in ipairs(sortedTerms) do
-            if term.chinese and term.english and string.find(result, term.chinese, 1, true) then
-                result = string.gsub(result, term.chinese, term.english)
-                hasTranslation = true
+            local search = term.chinese
+            local repl = term.english
+            local searchLen = string.len(search)
+            local i = 1
+            while i <= string.len(result) - searchLen + 1 do
+                if string.sub(result, i, i + searchLen - 1) == search and not is_replaced(i, i + searchLen - 1) then
+                    -- Replace this occurrence
+                    result = string.sub(result, 1, i - 1) .. repl .. string.sub(result, i + searchLen)
+                    -- Mark replaced region
+                    for j = i, i + string.len(repl) - 1 do
+                        replaced[j] = true
+                    end
+                    hasTranslation = true
+                    -- Move past this replacement
+                    i = i + string.len(repl)
+                else
+                    i = i + 1
+                end
             end
         end
     end
@@ -238,42 +259,56 @@ end
 
 -- Event handler for all chat messages
 local function onChatMessage(message, sender, language, channelString, target, flags, zoneID, channelIndex, channelBaseName, unused, lineID, guid)
-    -- Make sure we have valid arguments
     if not message then return end
-    -- Extract channel type from channelString or channelBaseName
-    local channel = ""
-    if channelString then
+    -- Use channelBaseName for channel name matching if available
+    local channel = nil
+    if type(channelBaseName) == "string" and channelBaseName ~= "" then
+        channel = string.lower(channelBaseName)
+    elseif type(channelString) == "string" and channelString ~= "" then
         channel = string.lower(channelString)
-    elseif channelBaseName then
-        channel = string.lower(channelBaseName)
+    elseif type(channelIndex) == "number" and channelIndex > 0 and GetChannelName then
+        -- Try to resolve channel name from index (Classic API)
+        local name = GetChannelName(channelIndex)
+        if type(name) == "string" and name ~= "" then
+            channel = string.lower(name)
+        end
     end
-    -- Fallback: try to detect from channelBaseName
-    if channel == "" and channelBaseName then
-        channel = string.lower(channelBaseName)
-    end
+    if not channel then channel = "" end
     if debugMode then
-        DEFAULT_CHAT_FRAME:AddMessage("|cffffd700Debug:|r Raw channelString: " .. tostring(channelString) .. ", channelBaseName: " .. tostring(channelBaseName))
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffd700Debug:|r Raw channelString: " .. tostring(channelString) .. ", channelBaseName: " .. tostring(channelBaseName) .. ", channelIndex: " .. tostring(channelIndex) .. ", resolved channel: " .. tostring(channel))
     end
-    -- Handle special channel mappings
-    if channel:find("world") or channel:find("世") or channel:find("world channel") then
-        channel = "world"
-    elseif channel:find("trade") then
-        channel = "trade"
-    elseif channel:find("general") then
-        channel = "general"
-    elseif channel:find("raid") then
-        channel = "raid"
-    elseif channel:find("guild") then
-        channel = "guild"
-    elseif channel:find("party") then
-        channel = "party"
-    elseif channel:find("whisper") then
-        channel = "whisper"
+    -- Defensive: always coerce channel to string
+    channel = tostring(channel or "")
+    -- Only call :find if channel is a non-empty string
+    if type(channel) == "string" and channel ~= "" then
+        if channel:find("world") or channel:find("世") or channel:find("world channel") then
+            channel = "world"
+        elseif channel:find("trade") then
+            channel = "trade"
+        elseif channel:find("general") then
+            channel = "general"
+        elseif channel:find("raid") then
+            channel = "raid"
+        elseif channel:find("guild") then
+            channel = "guild"
+        elseif channel:find("party") then
+            channel = "party"
+        elseif channel:find("whisper") then
+            channel = "whisper"
+        end
     end
     if debugMode then
         DEFAULT_CHAT_FRAME:AddMessage("|cffffd700Debug:|r Channel detected: " .. tostring(channel) .. ", message: " .. tostring(message))
     end
-    -- Check if this channel is enabled for translation
+    if channel == "" then
+        -- Log all arguments for further debugging
+        local args = {message, sender, language, channelString, target, flags, zoneID, channelIndex, channelBaseName, unused, lineID, guid}
+        local argStrings = {}
+        for i, v in ipairs(args) do
+            table.insert(argStrings, tostring(v))
+        end
+        DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[MyTranslator Debug] Channel unresolved. Args: " .. table.concat(argStrings, ", "))
+    end
     if MyTranslatorDB.channels[channel] then
         processTranslation(message, sender or "Unknown", channel)
     end
@@ -399,7 +434,7 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4, arg5, a
             end
         end
         frame:UnregisterEvent("PLAYER_LOGIN")
-    elseif string.find(event, "CHAT_MSG") then
+    elseif event == "CHAT_MSG_SAY" or event == "CHAT_MSG_YELL" or event == "CHAT_MSG_PARTY" or event == "CHAT_MSG_PARTY_LEADER" or event == "CHAT_MSG_GUILD" or event == "CHAT_MSG_OFFICER" or event == "CHAT_MSG_WHISPER" or event == "CHAT_MSG_WHISPER_INFORM" or event == "CHAT_MSG_CHANNEL" or event == "CHAT_MSG_RAID" or event == "CHAT_MSG_RAID_LEADER" or event == "CHAT_MSG_RAID_WARNING" or event == "CHAT_MSG_BATTLEGROUND" or event == "CHAT_MSG_BATTLEGROUND_LEADER" then
         onChatMessage(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12)
     end
 end)
@@ -494,8 +529,8 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4, arg5, a
             end
         end
         frame:UnregisterEvent("PLAYER_LOGIN")
-    else
-        onChatMessage(self, event, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10)
+    elseif event == "CHAT_MSG_SAY" or event == "CHAT_MSG_YELL" or event == "CHAT_MSG_PARTY" or event == "CHAT_MSG_PARTY_LEADER" or event == "CHAT_MSG_GUILD" or event == "CHAT_MSG_OFFICER" or event == "CHAT_MSG_WHISPER" or event == "CHAT_MSG_WHISPER_INFORM" or event == "CHAT_MSG_CHANNEL" or event == "CHAT_MSG_RAID" or event == "CHAT_MSG_RAID_LEADER" or event == "CHAT_MSG_RAID_WARNING" or event == "CHAT_MSG_BATTLEGROUND" or event == "CHAT_MSG_BATTLEGROUND_LEADER" then
+        onChatMessage(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12)
     end
 end)
 

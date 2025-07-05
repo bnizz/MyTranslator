@@ -15,6 +15,8 @@ MyTranslatorData = {
         ["等等"] = "Wait",
         ["快点"] = "Hurry up",
         ["慢点"] = "Slow down",
+        ["全"] = "All",
+        ["单"] = "Single",
         
         -- Party & Group Management
         ["队伍"] = "Party",

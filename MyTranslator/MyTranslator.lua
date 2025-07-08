@@ -95,10 +95,9 @@ local function buildSortedCaches()
     -- Sort by length (longest first) for greedy matching
     table.sort(sortedChineseEntries, function(a, b) return a.len > b.len end)
     table.sort(sortedEnglishEntries, function(a, b) return a.len > b.len end)
+      lastCacheRebuild = GetTime()
     
-    lastCacheRebuild = GetTime()
-    
-    print("|cffeda55f[MyTranslator]|r Optimization cache built: " .. table.getn(sortedChineseEntries) .. " entries")
+    DEFAULT_CHAT_FRAME:AddMessage("|cffeda55f[MyTranslator]|r Optimization cache built: " .. table.getn(sortedChineseEntries) .. " entries")
 end
 
 -- Initialize translation data from loaded tables

@@ -79,11 +79,21 @@ local function translateMessage(message, direction)
             table.insert(sortedEntries, {chinese = chinese, english = english, length = string.len(chinese)})
         end
         table.sort(sortedEntries, function(a, b) return a.length > b.length end)
-        
-        -- Apply translations starting with longest matches
+          -- Apply translations starting with longest matches
         for _, entry in ipairs(sortedEntries) do
             if string.find(translatedMessage, entry.chinese, 1, true) then
-                translatedMessage = string.gsub(translatedMessage, entry.chinese, entry.english)
+                -- Add space before English translation (except at start of string)
+                local replacement = entry.english
+                local startPos, endPos = string.find(translatedMessage, entry.chinese, 1, true)
+                if startPos and startPos > 1 then
+                    -- Check if there's already a space before the replacement position
+                    local charBefore = string.sub(translatedMessage, startPos - 1, startPos - 1)
+                    if charBefore ~= " " then
+                        replacement = " " .. replacement
+                    end
+                end
+                
+                translatedMessage = string.gsub(translatedMessage, entry.chinese, replacement)
                 hasTranslation = true
             end
         end
@@ -163,10 +173,8 @@ local function processTranslation(message, sender, channel)
         local displayText = translatedMessage
         if MyTranslatorDB.showOriginal then
             displayText = translatedMessage .. " |cff888888(" .. message .. ")|r"
-        end
-        
-        local channelTag = channel and "[" .. channel .. "]" or ""
-        DEFAULT_CHAT_FRAME:AddMessage(string.format("|cffeda55f[|r|cffffa50MyTranslator|r|cffeda55f]|r %s %s: %s", 
+        end        local channelTag = channel and "[" .. channel .. "]" or ""
+        DEFAULT_CHAT_FRAME:AddMessage(string.format("|cffeda55f[MyTranslator]|r %s %s: %s", 
             channelTag, sender or "Unknown", displayText))
     end
 end

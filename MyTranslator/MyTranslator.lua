@@ -30,9 +30,76 @@ local TranslationsTable = nil
 local englishToChinese = nil
 local debugMode = false
 
+-- Performance optimization caches
+local sortedChineseEntries = nil
+local sortedEnglishEntries = nil
+local lastCacheRebuild = 0
+local cacheRebuildInterval = 300 -- Rebuild cache every 5 minutes if needed
+local translationCache = {} -- LRU cache for recent translations
+local maxCacheSize = 500
+local cacheHits = 0
+local cacheMisses = 0
+
+-- Performance optimization: Pre-sorted translation caches
+local sortedChineseEntries = nil
+local sortedEnglishEntries = nil
+local lastCacheTime = 0
+local CACHE_REBUILD_INTERVAL = 300 -- Rebuild cache every 5 minutes if needed
+
 -- Character sets for language detection
 local chineseCharPattern = "[\228-\233][\128-\191][\128-\191]"
 local englishCharPattern = "[a-zA-Z]"
+
+-- LRU Cache implementation (Classic WoW 1.12 compatible)
+local function addToCache(key, value)
+    if table.getn(translationCache) >= maxCacheSize then
+        -- Remove oldest entry (simple FIFO for Classic WoW)
+        table.remove(translationCache, 1)
+    end
+    table.insert(translationCache, {key = key, value = value})
+end
+
+local function getFromCache(key)
+    for i, entry in ipairs(translationCache) do
+        if entry.key == key then
+            cacheHits = cacheHits + 1
+            -- Move to end (most recently used)
+            table.remove(translationCache, i)
+            table.insert(translationCache, entry)
+            return entry.value
+        end
+    end
+    cacheMisses = cacheMisses + 1
+    return nil
+end
+
+-- Pre-sort translation entries for optimal performance (called once on load)
+local function buildSortedCaches()
+    if not TranslationsTable then
+        return
+    end
+    
+    sortedChineseEntries = {}
+    sortedEnglishEntries = {}
+    
+    -- Build Chinese entries (sorted by length, longest first)
+    for chinese, english in pairs(TranslationsTable) do
+        table.insert(sortedChineseEntries, {text = chinese, translation = english, len = string.len(chinese)})
+    end
+    
+    -- Build English entries (sorted by length, longest first)  
+    for chinese, english in pairs(TranslationsTable) do
+        table.insert(sortedEnglishEntries, {text = english, translation = chinese, len = string.len(english)})
+    end
+    
+    -- Sort by length (longest first) for greedy matching
+    table.sort(sortedChineseEntries, function(a, b) return a.len > b.len end)
+    table.sort(sortedEnglishEntries, function(a, b) return a.len > b.len end)
+    
+    lastCacheRebuild = GetTime()
+    
+    print("|cffeda55f[MyTranslator]|r Optimization cache built: " .. table.getn(sortedChineseEntries) .. " entries")
+end
 
 -- Initialize translation data from loaded tables
 local function initializeTranslationData()
@@ -44,7 +111,11 @@ local function initializeTranslationData()
         for chinese, english in pairs(TranslationsTable) do
             englishToChinese[english] = chinese
         end
-          if debugMode then
+        
+        -- Build performance optimization caches immediately
+        buildSortedCaches()
+        
+        if debugMode then
             local count = 0
             for _ in pairs(TranslationsTable) do count = count + 1 end
             DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00MyTranslator:|r Loaded " .. count .. " translation entries")
@@ -63,54 +134,46 @@ local function containsEnglish(text)
     return string.find(text or "", englishCharPattern)
 end
 
--- Core translation function
+-- Optimized core translation function using pre-sorted caches
 local function translateMessage(message, direction)
     if not TranslationsTable or not message then
         return nil, false
     end
     
+    -- Check cache first
+    local cacheKey = direction .. ":" .. message
+    local cachedResult = getFromCache(cacheKey)
+    if cachedResult then
+        return cachedResult.translated, cachedResult.hasTranslation
+    end
+    
     local translatedMessage = message
     local hasTranslation = false
     
-    if direction == "cn2en" then
-        -- Chinese to English: Sort by length (longest first) for proper priority
-        local sortedEntries = {}
-        for chinese, english in pairs(TranslationsTable) do
-            table.insert(sortedEntries, {chinese = chinese, english = english, length = string.len(chinese)})
-        end
-        table.sort(sortedEntries, function(a, b) return a.length > b.length end)
-          -- Apply translations starting with longest matches
-        for _, entry in ipairs(sortedEntries) do
-            if string.find(translatedMessage, entry.chinese, 1, true) then
+    if direction == "cn2en" and sortedChineseEntries then
+        -- Use pre-sorted Chinese entries for optimal performance
+        for _, entry in ipairs(sortedChineseEntries) do
+            if string.find(translatedMessage, entry.text, 1, true) then
                 -- Add space before English translation (except at start of string)
-                local replacement = entry.english
-                local startPos, endPos = string.find(translatedMessage, entry.chinese, 1, true)
+                local replacement = entry.translation
+                local startPos, endPos = string.find(translatedMessage, entry.text, 1, true)
                 if startPos and startPos > 1 then
-                    -- Check if there's already a space before the replacement position
                     local charBefore = string.sub(translatedMessage, startPos - 1, startPos - 1)
                     if charBefore ~= " " then
                         replacement = " " .. replacement
                     end
                 end
                 
-                translatedMessage = string.gsub(translatedMessage, entry.chinese, replacement)
+                translatedMessage = string.gsub(translatedMessage, entry.text, replacement)
                 hasTranslation = true
             end
         end
-    elseif direction == "en2cn" and englishToChinese then
-        -- English to Chinese: Whole word/phrase matching only
+    elseif direction == "en2cn" and sortedEnglishEntries then
+        -- Use pre-sorted English entries for optimal performance
         local lowerMessage = string.lower(translatedMessage)
         
-        -- Sort English phrases by length (longest first) to match multi-word phrases before single words
-        local sortedEntries = {}
-        for english, chinese in pairs(englishToChinese) do
-            table.insert(sortedEntries, {english = english, chinese = chinese, length = string.len(english)})
-        end
-        table.sort(sortedEntries, function(a, b) return a.length > b.length end)
-        
-        -- Check for whole word/phrase matches using word boundary logic
-        for _, entry in ipairs(sortedEntries) do
-            local englishLower = string.lower(entry.english)
+        for _, entry in ipairs(sortedEnglishEntries) do
+            local englishLower = string.lower(entry.text)
             
             -- Check if it's a whole word match (not part of another word)
             local startPos, endPos = string.find(lowerMessage, englishLower, 1, true)
@@ -137,7 +200,7 @@ local function translateMessage(message, direction)
                     -- Replace the match in the original message
                     local beforeText = string.sub(translatedMessage, 1, startPos - 1)
                     local afterText = string.sub(translatedMessage, endPos + 1)
-                    translatedMessage = beforeText .. entry.chinese .. afterText
+                    translatedMessage = beforeText .. entry.translation .. afterText
                     lowerMessage = string.lower(translatedMessage) -- Update for next iteration
                     hasTranslation = true
                     break -- Only replace first occurrence of each word
@@ -148,6 +211,9 @@ local function translateMessage(message, direction)
             end
         end
     end
+    
+    -- Cache the result
+    addToCache(cacheKey, {translated = translatedMessage, hasTranslation = hasTranslation})
     
     return translatedMessage, hasTranslation
 end
@@ -266,10 +332,20 @@ local function handleSlashCommand(msg)
         DEFAULT_CHAT_FRAME:AddMessage("|cffffd700MyTranslator:|r Show original: " .. (MyTranslatorDB.showOriginal and "ON" or "OFF"))
     elseif command == "outgoing" then
         MyTranslatorDB.translateOutgoing = not MyTranslatorDB.translateOutgoing
-        DEFAULT_CHAT_FRAME:AddMessage("|cffffd700MyTranslator:|r Translate outgoing messages: " .. (MyTranslatorDB.translateOutgoing and "ON" or "OFF"))
-    elseif command == "debug" then
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffd700MyTranslator:|r Translate outgoing messages: " .. (MyTranslatorDB.translateOutgoing and "ON" or "OFF"))    elseif command == "debug" then
         debugMode = not debugMode
-        DEFAULT_CHAT_FRAME:AddMessage("|cffffd700MyTranslator:|r Debug mode: " .. (debugMode and "ON" or "OFF"))
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffd700MyTranslator:|r Debug mode: " .. (debugMode and "ON" or "OFF"))    elseif command == "cache" then
+        local hitRate = (cacheHits + cacheMisses > 0) and (cacheHits / (cacheHits + cacheMisses) * 100) or 0
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffd700MyTranslator Cache Stats:|r")
+        DEFAULT_CHAT_FRAME:AddMessage("Cache hits: " .. cacheHits .. ", misses: " .. cacheMisses)
+        DEFAULT_CHAT_FRAME:AddMessage("Hit rate: " .. string.format("%.1f%%", hitRate))
+        DEFAULT_CHAT_FRAME:AddMessage("Cache size: " .. table.getn(translationCache) .. "/" .. maxCacheSize)
+        DEFAULT_CHAT_FRAME:AddMessage("Sorted entries: " .. (sortedChineseEntries and table.getn(sortedChineseEntries) or 0) .. " Chinese, " .. (sortedEnglishEntries and table.getn(sortedEnglishEntries) or 0) .. " English")
+    elseif command == "clearcache" then
+        translationCache = {}
+        cacheHits = 0
+        cacheMisses = 0
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffd700MyTranslator:|r Translation cache cleared")
     elseif command == "init" then
         if initializeTranslationData() then
             DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00MyTranslator:|r Translation data initialized successfully!")
@@ -323,9 +399,10 @@ local function handleSlashCommand(msg)
         DEFAULT_CHAT_FRAME:AddMessage("/mtr cn - Toggle Chinese to English")
         DEFAULT_CHAT_FRAME:AddMessage("/mtr en - Toggle English to Chinese") 
         DEFAULT_CHAT_FRAME:AddMessage("/mtr original - Toggle showing original text")
-        DEFAULT_CHAT_FRAME:AddMessage("/mtr outgoing - Toggle translating your own messages")
-        DEFAULT_CHAT_FRAME:AddMessage("/mtr debug - Toggle debug mode")
-        DEFAULT_CHAT_FRAME:AddMessage("/mtr init - Manually initialize translation data")        DEFAULT_CHAT_FRAME:AddMessage("/mtr test - Test translation function")
+        DEFAULT_CHAT_FRAME:AddMessage("/mtr outgoing - Toggle translating your own messages")        DEFAULT_CHAT_FRAME:AddMessage("/mtr debug - Toggle debug mode")
+        DEFAULT_CHAT_FRAME:AddMessage("/mtr cache - Show cache performance stats")
+        DEFAULT_CHAT_FRAME:AddMessage("/mtr clearcache - Clear translation cache")
+        DEFAULT_CHAT_FRAME:AddMessage("/mtr init - Manually initialize translation data")DEFAULT_CHAT_FRAME:AddMessage("/mtr test - Test translation function")
         DEFAULT_CHAT_FRAME:AddMessage("/mtr testchat - Test chat message processing")
         DEFAULT_CHAT_FRAME:AddMessage("/mtr enable <channel> - Enable channel")
         DEFAULT_CHAT_FRAME:AddMessage("/mtr disable <channel> - Disable channel")
